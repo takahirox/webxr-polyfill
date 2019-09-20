@@ -13,29 +13,29 @@
  * limitations under the License.
  */
 
-import CardboardXRDevice from './devices/CardboardXRDevice';
-import WebVRDevice from './devices/WebVRDevice';
+//import CardboardXRDevice from './devices/CardboardXRDevice';
+//import WebVRDevice from './devices/WebVRDevice';
 import XR from './api/XR';
 
-import { isMobile } from './utils';
+//import { isMobile } from './utils';
 
 /**
  * Queries browser to see if any VRDisplay exists.
  * Resolves to a polyfilled XRDevice or null.
  */
-const getWebVRDevice = async function (global) {
-  let device = null;
-  if ('getVRDisplays' in global.navigator) {
-    try {
-      const displays = await global.navigator.getVRDisplays();
-      if (displays && displays.length) {
-        device = new WebVRDevice(global, displays[0]);
-      }
-    } catch (e) {}
-  }
-
-  return device;
-};
+//const getWebVRDevice = async function (global) {
+//  let device = null;
+//  if ('getVRDisplays' in global.navigator) {
+//    try {
+//      const displays = await global.navigator.getVRDisplays();
+//      if (displays && displays.length) {
+//        device = new WebVRDevice(global, displays[0]);
+//      }
+//    } catch (e) {}
+//  }
+//
+//  return device;
+//};
 
 /**
  * Return an XRDevice interface based off of configuration
@@ -47,12 +47,12 @@ const getWebVRDevice = async function (global) {
  */
 export const requestXRDevice = async function (global, config) {  
   // Check for a 1.1 VRDisplay.
-  if (config.webvr) {
-    let xr = await getWebVRDevice(global);
-    if (xr) {
-      return xr;
-    }
-  }
+  //if (config.webvr) {
+  //  let xr = await getWebVRDevice(global);
+  //  if (xr) {
+  //    return xr;
+  //  }
+  //}
 
   // If no VR devices are present, return a Cardboard device even
   // if we aren't on mobile so that inline WebXR sessions are at least
@@ -61,15 +61,16 @@ export const requestXRDevice = async function (global, config) {
   // immersive session in a headset that gets connected later.
 
   // If we're on Cardboard, make sure that VRFrameData is a global
-  if (!global.VRFrameData) {
-    global.VRFrameData = function () {
-      this.rightViewMatrix = new Float32Array(16);
-      this.leftViewMatrix = new Float32Array(16);
-      this.rightProjectionMatrix = new Float32Array(16);
-      this.leftProjectionMatrix = new Float32Array(16);
-      this.pose = null;
-    };
-  }
+  //if (!global.VRFrameData) {
+  //  global.VRFrameData = function () {
+  //    this.rightViewMatrix = new Float32Array(16);
+  //    this.leftViewMatrix = new Float32Array(16);
+  //    this.rightProjectionMatrix = new Float32Array(16);
+  //    this.leftProjectionMatrix = new Float32Array(16);
+  //    this.pose = null;
+  //  };
+  //}
 
-  return new CardboardXRDevice(global, config.cardboardConfig);
+  //return new CardboardXRDevice(global, config.cardboardConfig);
+  return null;
 }
