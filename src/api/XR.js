@@ -67,9 +67,10 @@ export default class XR extends EventTarget {
 
   /**
    * @param {XRSessionMode} mode
+   * @param {Object} xrSessionInit
    * @return {Promise<XRSession>}
    */
-  async requestSession(mode) {
+  async requestSession(mode, xrSessionInit) {
     // If the device hasn't resolved yet, wait for it and try again.
     if (!this[PRIVATE].device) {
       if (mode != 'inline') {
@@ -85,7 +86,7 @@ export default class XR extends EventTarget {
     // Call device's requestSession, which does some initialization (1.1 
     // fallback calls `vrDisplay.requestPresent()` for example). Could throw 
     // due to missing user gesture.
-    const sessionId = await this[PRIVATE].device.requestSession(mode);
+    const sessionId = await this[PRIVATE].device.requestSession(mode, xrSessionInit);
     const session = new XRSession(this[PRIVATE].device, mode, sessionId);
 
     if (mode == 'inline') {
