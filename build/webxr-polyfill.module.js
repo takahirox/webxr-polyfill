@@ -169,7 +169,7 @@ class XR$1 extends EventTarget {
     }
     return Promise.resolve();
   }
-  async requestSession(mode) {
+  async requestSession(mode, xrSessionInit) {
     if (!this[PRIVATE$1].device) {
       if (mode != 'inline') {
         throw new Error(POLYFILL_REQUEST_SESSION_ERROR);
@@ -177,7 +177,7 @@ class XR$1 extends EventTarget {
         await this[PRIVATE$1].devicePromise;
       }
     }
-    const sessionId = await this[PRIVATE$1].device.requestSession(mode);
+    const sessionId = await this[PRIVATE$1].device.requestSession(mode, xrSessionInit);
     const session = new XRSession(this[PRIVATE$1].device, mode, sessionId);
     if (mode == 'inline') {
       this[PRIVATE$1].inlineSessions.add(session);
