@@ -143,7 +143,7 @@ class EventTarget {
 const PRIVATE$1 = Symbol('@@webxr-polyfill/XR');
 
 const POLYFILL_REQUEST_SESSION_ERROR =
-`Polyfill Error: Must call navigator.xr.supportsSession() with any XRSessionMode
+`Polyfill Error: Must call navigator.xr.isSessionSupported() with any XRSessionMode
 or navigator.xr.requestSession('inline') prior to requesting an immersive
 session. This is a limitation specific to the WebXR Polyfill and does not apply
 to native implementations of the API.`;
@@ -158,16 +158,14 @@ class XR$1 extends EventTarget {
     };
     devicePromise.then((device) => { this[PRIVATE$1].device = device; });
   }
-  async supportsSession(mode) {
+  async isSessionSupported(mode) {
     if (!this[PRIVATE$1].device) {
       await this[PRIVATE$1].devicePromise;
     }
     if (mode != 'inline') {
-      if (!this[PRIVATE$1].device.supportsSession(mode)) {
-        return Promise.reject(new DOMException('The specified session configuration is not supported.'));
-      }
+      return Promise.resolve(this[PRIVATE$1].device.isSessionSupported(mode));
     }
-    return Promise.resolve();
+    return Promise.resolve(true);
   }
   async requestSession(mode, xrSessionInit) {
     if (!this[PRIVATE$1].device) {
@@ -1980,6 +1978,24 @@ class WebXRPolyfill {
   _injectCompatibilityShims(global) {
     if (!partials.every(iface => !!global[iface])) {
       throw new Error(`Global must have the following attributes : ${partials}`);
+    }
+    if (global.navigator.xr &&
+        'supportsSession' in global.navigator.xr &&
+        !('isSessionSupported' in global.navigator.xr)) {
+      let originalSupportsSession = global.navigator.xr.supportsSession;
+      global.navigator.xr.isSessionSupported = function(mode) {
+        return originalSupportsSession.call(this, mode).then(() => {
+          return true;
+        }).catch(() => {
+          return false;
+        });
+      };
+      global.navigator.xr.supportsSession = function(mode) {
+        console.warn("navigator.xr.supportsSession() is deprecated. Please " +
+        "call navigator.xr.isSessionSupported() instead and check the boolean " +
+        "value returned when the promise resolves.");
+        return originalSupportsSession.call(this, mode);
+      };
     }
     if (global.XRWebGLLayer) {
       let originalRequestSession = global.navigator.xr.requestSession;
