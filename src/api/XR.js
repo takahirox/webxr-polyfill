@@ -15,6 +15,7 @@
 
 import EventTarget from '../lib/EventTarget';
 import { XRReferenceSpaceTypes } from './XRReferenceSpace';
+import XRSession from './XRSession';
 
 export const PRIVATE = Symbol('@@webxr-polyfill/XR');
 
