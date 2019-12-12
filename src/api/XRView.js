@@ -18,7 +18,7 @@ import * as mat4 from 'gl-matrix/src/gl-matrix/mat4';
 import XRViewport from './XRViewport';
 import XRRigidTransform from './XRRigidTransform';
 
-const XREyes = ['left', 'right'];
+const XREyes = ['left', 'right', 'none'];
 
 export const PRIVATE = Symbol('@@webxr-polyfill/XRView');
 
@@ -28,7 +28,7 @@ export default class XRView {
    * @param {XREye} eye
    * @param {number} sessionId
    */
-  constructor(device, eye, sessionId) {
+  constructor(device, transform, eye, sessionId) {
     if (!XREyes.includes(eye)) {
       throw new Error(`XREye must be one of: ${XREyes}`);
     }
@@ -45,7 +45,7 @@ export default class XRView {
       viewport,
       temp,
       sessionId,
-      transform: null,
+      transform,
     };
   }
 
@@ -63,15 +63,6 @@ export default class XRView {
    * @return {XRRigidTransform}
    */
   get transform() { return this[PRIVATE].transform; }
-
-  /**
-   * @param {mat4} viewMatrix 
-   */
-  _updateViewMatrix(viewMatrix) {
-    let invMatrix = mat4.identity(new Float32Array(16));
-    mat4.invert(invMatrix, viewMatrix);
-    this[PRIVATE].transform = new XRRigidTransform(invMatrix);
-  }
 
   /**
    * NON-STANDARD

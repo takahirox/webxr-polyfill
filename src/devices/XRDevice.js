@@ -14,6 +14,7 @@
  */
 
 import EventTarget from '../lib/EventTarget';
+import XRReferenceSpace from '../api/XRReferenceSpace';
 
 export default class XRDevice extends EventTarget {
   /**
@@ -36,26 +37,6 @@ export default class XRDevice extends EventTarget {
   }
 
   /**
-   * @return {number}
-   */
-  get depthNear() { throw new Error('Not implemented'); }
-
-  /**
-   * @param {number}
-   */
-  set depthNear(val) { throw new Error('Not implemented'); }
-
-  /**
-   * @return {number}
-   */
-  get depthFar() { throw new Error('Not implemented'); }
-
-  /**
-   * @param {number}
-   */
-  set depthFar(val) { throw new Error('Not implemented'); }
-
-  /**
    * Called when a XRSession has a `baseLayer` property set.
    *
    * @param {number} sessionId
@@ -64,27 +45,26 @@ export default class XRDevice extends EventTarget {
   onBaseLayerSet(sessionId, layer) { throw new Error('Not implemented'); }
 
   /**
-   * Called when a XRSession has an `inlineVerticalFieldOfView` property set.
-   *
-   * @param {number} sessionId
-   * @param {float} value
-   */
-  onInlineVerticalFieldOfViewSet(sessionId, value) { throw new Error('Not implemented'); }
-
-  /**
    * @param {XRSessionMode} mode
    * @return {boolean}
    */
   isSessionSupported(mode) { throw new Error('Not implemented'); }
 
   /**
+   * @param {string} featureDescriptor
+   * @return {boolean}
+   */
+  isFeatureSupported(featureDescriptor) { throw new Error('Not implemented'); }
+
+  /**
    * Returns a promise if creating a session is successful.
    * Usually used to set up presentation in the device.
    *
    * @param {XRSessionMode} mode
+   * @param {Set<string>} enabledFeatures
    * @return {Promise<number>}
    */
-  async requestSession(mode) { throw new Error('Not implemented'); }
+  async requestSession(mode, enabledFeatures) { throw new Error('Not implemented'); }
 
   /**
    * @return {Function}
@@ -100,6 +80,13 @@ export default class XRDevice extends EventTarget {
    * @param {number} sessionId
    */
   onFrameEnd(sessionId) { throw new Error('Not implemented'); }
+
+  /**
+   * @param {number} sessionId
+   * @param {XRReferenceSpaceType} type
+   * @return {boolean}
+   */
+  doesSessionSupportReferenceSpace(sessionId, type) { throw new Error('Not implemented'); }
 
   /**
    * @return {Object?}

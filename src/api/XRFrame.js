@@ -13,11 +13,17 @@
  * limitations under the License.
  */
 
+import {PRIVATE as SESSION_PRIVATE} from './XRSession';
 import XRViewerPose from './XRViewerPose';
 import XRView from './XRView';
 import { mat4 } from 'gl-matrix';
 
 export const PRIVATE = Symbol('@@webxr-polyfill/XRFrame');
+
+const NON_ACTIVE_MSG = "XRFrame access outside the callback that produced it is invalid.";
+const NON_ANIMFRAME_MSG = "getViewerPose can only be called on XRFrame objects passed to XRSession.requestAnimationFrame callbacks.";
+
+let NEXT_FRAME_ID = 0;
 
 export default class XRFrame {
   /**
@@ -26,20 +32,13 @@ export default class XRFrame {
    * @param {number} sessionId
    */
   constructor(device, session, sessionId) {
-    // Non-immersive sessions only have a monoscopic view.
-    const views = [
-      new XRView(device, 'left', sessionId),
-    ];
-
-    if (session.immersive) {
-      views.push(new XRView(device, 'right', sessionId));
-    }
-
     this[PRIVATE] = {
+      id: ++NEXT_FRAME_ID,
+      active: false,
+      animationFrame: false,
       device,
-      viewerPose: new XRViewerPose(device, views),
-      views,
       session,
+      sessionId
     };
   }
 
@@ -49,12 +48,35 @@ export default class XRFrame {
   get session() { return this[PRIVATE].session; }
 
   /**
-   * @param {XRSpace} space
+   * @param {XRReferenceSpace} referenceSpace
    * @return {XRViewerPose?}
    */
-  getViewerPose(space) {
-    this[PRIVATE].viewerPose._updateFromReferenceSpace(space);
-    return this[PRIVATE].viewerPose;
+  getViewerPose(referenceSpace) {
+    if (!this[PRIVATE].animationFrame) {
+      throw new DOMException(NON_ANIMFRAME_MSG, 'InvalidStateError');
+    }
+    if (!this[PRIVATE].active) {
+      throw new DOMException(NON_ACTIVE_MSG, 'InvalidStateError');
+    }
+
+    const device = this[PRIVATE].device;
+    const session = this[PRIVATE].session;
+
+    session[SESSION_PRIVATE].viewerSpace._ensurePoseUpdated(device, this[PRIVATE].id);
+    referenceSpace._ensurePoseUpdated(device, this[PRIVATE].id);
+
+    let viewerTransform = referenceSpace._getSpaceRelativeTransform(session[SESSION_PRIVATE].viewerSpace);
+
+    const views = [];
+    for (let viewSpace of session[SESSION_PRIVATE].viewSpaces) {
+      viewSpace._ensurePoseUpdated(device, this[PRIVATE].id);
+      let viewTransform = referenceSpace._getSpaceRelativeTransform(viewSpace);
+      let view = new XRView(device, viewTransform, viewSpace.eye, this[PRIVATE].sessionId);
+      views.push(view);
+    }
+    let viewerPose = new XRViewerPose(viewerTransform, views, false /* TODO: emulatedPosition */);
+
+    return viewerPose;
   }
 
   /**
@@ -63,18 +85,21 @@ export default class XRFrame {
    * @return {XRPose?} pose
    */
   getPose(space, baseSpace) {
-    if (space._specialType === "viewer") {
-      // Don't just return the viewer pose since the resulting pose shouldn't
-      // include the views array - it should just have the transform.
-      let viewerPose = this.getViewerPose(baseSpace);
-      return new XRPose(
-        new XRRigidTransform(viewerPose.poseModelMatrix),
-        viewerPose.emulatedPosition);
+    if (!this[PRIVATE].active) {
+      throw new DOMException(NON_ACTIVE_MSG, 'InvalidStateError');
     }
 
+    const device = this[PRIVATE].device;
     if (space._specialType === "target-ray" || space._specialType === "grip") {
-      return this[PRIVATE].device.getInputPose(
+      // TODO: Stop special-casing input.
+      return device.getInputPose(
         space._inputSource, baseSpace, space._specialType);
+    } else {
+      space._ensurePoseUpdated(device, this[PRIVATE].id);
+      baseSpace._ensurePoseUpdated(device, this[PRIVATE].id);
+      let transform = baseSpace._getSpaceRelativeTransform(space);
+      if (!transform) { return null; }
+      return new XRPose(transform, false /* TODO: emulatedPosition */);
     }
 
     return null;

@@ -15,15 +15,37 @@
 
 import EventTarget from '../lib/EventTarget';
 import now from '../lib/now';
-import XRFrame from './XRFrame';
+import XRFrame, {PRIVATE as XRFRAME_PRIVATE} from './XRFrame';
 import XRReferenceSpace, {
   XRReferenceSpaceTypes
 } from './XRReferenceSpace';
+import XRRenderState from './XRRenderState';
 import XRWebGLLayer from './XRWebGLLayer';
 import XRInputSourceEvent from './XRInputSourceEvent';
 import XRSessionEvent from './XRSessionEvent';
+import XRSpace from './XRSpace';
+import XRInputSourcesChangeEvent from './XRInputSourcesChangeEvent';
 
 export const PRIVATE = Symbol('@@webxr-polyfill/XRSession');
+
+// Nonstandard helper class. Not exposed by the API anywhere.
+class XRViewSpace extends XRSpace {
+  constructor(eye) {
+    super(eye);
+  }
+
+  get eye() {
+    return this._specialType;
+  }
+
+  /**
+   * Called when this space's base pose needs to be updated
+   * @param {XRDevice} device
+   */
+  _onPoseUpdate(device) {
+    this._inverseBaseMatrix = device.getBaseViewMatrix(this._specialType);
+  }
+}
 
 export default class XRSession extends EventTarget {
   /**
@@ -35,23 +57,128 @@ export default class XRSession extends EventTarget {
     super();
 
     let immersive = mode != 'inline';
-    let outputContext = null;
+
+    // inlineVerticalFieldOfView must initialize to PI/2 for inline sessions.
+    let initialRenderState = new XRRenderState({
+      inlineVerticalFieldOfView: immersive ? null : Math.PI * 0.5
+    });
 
     this[PRIVATE] = {
       device,
       mode,
       immersive,
-      outputContext,
       ended: false,
       suspended: false,
-      suspendedCallback: null,
+      frameCallbacks: [],
+      currentFrameCallbacks: null,
+      frameHandle: 0,
+      deviceFrameHandle: null,
       id,
-      activeRenderState: null,
+      activeRenderState: initialRenderState,
       pendingRenderState: null,
+      viewerSpace: new XRReferenceSpace("viewer"),
+      viewSpaces: [],
+      currentInputSources: []
     };
 
-    const frame = new XRFrame(device, this, this[PRIVATE].id);
-    this[PRIVATE].frame = frame;
+    if (immersive) {
+      this[PRIVATE].viewSpaces.push(new XRViewSpace('left'),
+                                    new XRViewSpace('right'));
+    } else {
+      this[PRIVATE].viewSpaces.push(new XRViewSpace('none'));
+    }
+
+    // Single handler for animation frames from the device. The spec says this must
+    // run on every candidate frame even if there are no callbacks queued up.
+    this[PRIVATE].onDeviceFrame = () => {
+      if (this[PRIVATE].ended || this[PRIVATE].suspended) {
+        return;
+      }
+
+      // Queue next frame
+      this[PRIVATE].deviceFrameHandle = null;
+      this[PRIVATE].startDeviceFrameLoop();
+
+      // - If session’s pending render state is not null, apply the pending render state.
+      if (this[PRIVATE].pendingRenderState !== null) {
+        // Apply pending render state.
+        this[PRIVATE].activeRenderState = new XRRenderState(this[PRIVATE].pendingRenderState);
+        this[PRIVATE].pendingRenderState = null;
+
+        // Report to the device since it'll need to handle the layer for rendering.
+        if (this[PRIVATE].activeRenderState.baseLayer) {
+          this[PRIVATE].device.onBaseLayerSet(
+            this[PRIVATE].id,
+            this[PRIVATE].activeRenderState.baseLayer);
+        }
+      }
+
+      // - If session’s renderState's baseLayer is null, abort these steps.
+      if (this[PRIVATE].activeRenderState.baseLayer === null) {
+        return;
+      }
+
+      // - If session’s mode is "inline" and session’s renderState's output canvas is null,
+      //   abort these steps.
+      // ???
+
+      const frame = new XRFrame(device, this, this[PRIVATE].id);
+
+      // - Let callbacks be a list of the entries in session’s list of animation frame
+      //   callback, in the order in which they were added to the list.
+      const callbacks = this[PRIVATE].currentFrameCallbacks = this[PRIVATE].frameCallbacks;
+
+      // - Set session’s list of animation frame callbacks to the empty list.
+      this[PRIVATE].frameCallbacks = [];
+
+      // - Set frame’s active boolean to true.
+      frame[XRFRAME_PRIVATE].active = true;
+
+      // - Set frame’s animationFrame boolean to true.
+      frame[XRFRAME_PRIVATE].animationFrame = true;
+
+      this[PRIVATE].device.onFrameStart(this[PRIVATE].id, this[PRIVATE].activeRenderState);
+      // inputSources can be populated in .onFrameStart()
+      // so check the change and fire inputsourceschange event if needed
+      this._checkInputSourcesChange();
+
+      // - For each entry in callbacks, in order:
+      //   - If the entry’s cancelled boolean is true, continue to the next entry.
+      //   - Invoke the Web IDL callback function, passing now and frame as the arguments
+      //   - If an exception is thrown, report the exception.
+      const rightNow = now(); //should we get this from arguments?
+      for (let i = 0; i < callbacks.length; i++) {
+        try {
+          if (!callbacks[i].cancelled && typeof callbacks[i].callback === 'function') {
+            callbacks[i].callback(rightNow, frame);
+          }
+        } catch(err) {
+          console.error(err);
+        }
+      }
+      this[PRIVATE].currentFrameCallbacks = null;
+
+      // - Set frame’s active boolean to false.
+      frame[XRFRAME_PRIVATE].active = false;
+
+      this[PRIVATE].device.onFrameEnd(this[PRIVATE].id);
+    };
+
+    this[PRIVATE].startDeviceFrameLoop = () => {
+      if (this[PRIVATE].deviceFrameHandle === null) {
+        this[PRIVATE].deviceFrameHandle = this[PRIVATE].device.requestAnimationFrame(
+          this[PRIVATE].onDeviceFrame
+        );
+      }
+    };
+
+    this[PRIVATE].stopDeviceFrameLoop = () => {
+      const handle = this[PRIVATE].deviceFrameHandle;
+      if (handle !== null) {
+        this[PRIVATE].device.cancelAnimationFrame(handle);
+        this[PRIVATE].deviceFrameHandle = null;
+      }
+    };
 
     // Hook into the XRDisplay's `vr-present-end` event so we can
     // wrap up things here if we're cut off from the underlying
@@ -62,13 +189,8 @@ export default class XRSession extends EventTarget {
       // session has ended.
       if (sessionId !== this[PRIVATE].id) {
         this[PRIVATE].suspended = false;
-
+        this[PRIVATE].startDeviceFrameLoop();
         this.dispatchEvent('focus', { session: this });
-        const suspendedCallback = this[PRIVATE].suspendedCallback;
-        this[PRIVATE].suspendedCallback = null;
-        if (suspendedCallback) {
-          this.requestAnimationFrame(suspendedCallback);
-        }
         return;
       }
 
@@ -76,6 +198,7 @@ export default class XRSession extends EventTarget {
       // Set `ended` to true so we can disable all functionality
       // in this XRSession
       this[PRIVATE].ended = true;
+      this[PRIVATE].stopDeviceFrameLoop();
       device.removeEventListener('@webvr-polyfill/vr-present-end', this[PRIVATE].onPresentationEnd);
       device.removeEventListener('@webvr-polyfill/vr-present-start', this[PRIVATE].onPresentationStart);
       device.removeEventListener('@@webvr-polyfill/input-select-start', this[PRIVATE].onSelectStart);
@@ -93,6 +216,7 @@ export default class XRSession extends EventTarget {
       }
 
       this[PRIVATE].suspended = true;
+      this[PRIVATE].stopDeviceFrameLoop();
       this.dispatchEvent('blur', { session: this });
     };
     device.addEventListener('@@webxr-polyfill/vr-present-start', this[PRIVATE].onPresentationStart);
@@ -103,10 +227,7 @@ export default class XRSession extends EventTarget {
         return;
       }
 
-      this.dispatchEvent('selectstart', new XRInputSourceEvent('selectstart', {
-        frame: this[PRIVATE].frame,
-        inputSource: evt.inputSource
-      }));
+      this[PRIVATE].dispatchInputSourceEvent('selectstart',  evt.inputSource);
     };
     device.addEventListener('@@webxr-polyfill/input-select-start', this[PRIVATE].onSelectStart);
 
@@ -116,18 +237,46 @@ export default class XRSession extends EventTarget {
         return;
       }
 
-      this.dispatchEvent('selectend', new XRInputSourceEvent('selectend', {
-        frame: this[PRIVATE].frame,
-        inputSource: evt.inputSource
-      }));
+      this[PRIVATE].dispatchInputSourceEvent('selectend',  evt.inputSource);
 
       // Sadly, there's no way to make this a user gesture.
-      this.dispatchEvent('select',  new XRInputSourceEvent('select', {
-        frame: this[PRIVATE].frame,
-        inputSource: evt.inputSource
-      }));
+      this[PRIVATE].dispatchInputSourceEvent('select',  evt.inputSource);
     };
     device.addEventListener('@@webxr-polyfill/input-select-end', this[PRIVATE].onSelectEnd);
+
+    this[PRIVATE].onSqueezeStart = evt => {
+      // Ignore if this event is not for this session.
+      if (evt.sessionId !== this[PRIVATE].id) {
+        return;
+      }
+
+      this[PRIVATE].dispatchInputSourceEvent('squeezestart',  evt.inputSource);
+    };
+    device.addEventListener('@@webxr-polyfill/input-squeeze-start', this[PRIVATE].onSqueezeStart);
+
+    this[PRIVATE].onSqueezeEnd = evt => {
+      // Ignore if this event is not for this session.
+      if (evt.sessionId !== this[PRIVATE].id) {
+        return;
+      }
+
+      this[PRIVATE].dispatchInputSourceEvent('squeezeend',  evt.inputSource);
+
+      // Following the same way as select event
+      this[PRIVATE].dispatchInputSourceEvent('squeeze',  evt.inputSource);
+    };
+    device.addEventListener('@@webxr-polyfill/input-squeeze-end', this[PRIVATE].onSqueezeEnd);
+
+    this[PRIVATE].dispatchInputSourceEvent = (type, inputSource) => {
+      const frame = new XRFrame(device, this, this[PRIVATE].id);
+      const event = new XRInputSourceEvent(type, { frame, inputSource });
+      frame[XRFRAME_PRIVATE].active = true;
+      this.dispatchEvent(type, event);
+      frame[XRFRAME_PRIVATE].active = false;
+    };
+
+    // Start the frame loop
+    this[PRIVATE].startDeviceFrameLoop();
 
     this.onblur = undefined;
     this.onfocus = undefined;
@@ -144,59 +293,10 @@ export default class XRSession extends EventTarget {
   get renderState() { return this[PRIVATE].activeRenderState; }
 
   /**
-   * @return {boolean}
-   */
-  get immersive() { return this[PRIVATE].immersive; }
-
-  /**
-   * @return {WebGLRenderingContext}
-   */
-  get outputContext() { return this[PRIVATE].outputContext; }
-
-  /**
-   * @return {number}
-   */
-  get depthNear() { return this[PRIVATE].device.depthNear; }
-
-  /**
-   * @param {number}
-   */
-  set depthNear(value) { this[PRIVATE].device.depthNear = value; }
-
-  /**
-   * @return {number}
-   */
-  get depthFar() { return this[PRIVATE].device.depthFar; }
-
-  /**
-   * @param {number}
-   */
-  set depthFar(value) { this[PRIVATE].device.depthFar = value; }
-
-  /**
    * @return {XREnvironmentBlendMode}
    */
   get environmentBlendMode() {
     return this[PRIVATE].device.environmentBlendMode || 'opaque';
-  }
-
-  /**
-   * @return {XRWebGLLayer}
-   */
-  get baseLayer() { return this[PRIVATE].baseLayer; }
-
-  /**
-   * @param {baseLayer} value
-   */
-  set baseLayer(value) {
-    if (this[PRIVATE].ended) {
-      return;
-    }
-
-    this[PRIVATE].baseLayer = value;
-    // Report to the device since it'll need
-    // to handle the layer for rendering
-    this[PRIVATE].device.onBaseLayerSet(this[PRIVATE].id, value);
   }
 
   /**
@@ -208,14 +308,16 @@ export default class XRSession extends EventTarget {
       return;
     }
 
-    // 'unbounded' is unlikely to ever be supported by the polyfill, since it's
-    // pretty much impossible to do correctly without native support.
-    if (type === 'unbounded') {
-      throw new NotSupportedError(`The WebXR polyfill does not support the ${type} reference space`);
-    }
-
     if (!XRReferenceSpaceTypes.includes(type)) {
       throw new TypeError(`XRReferenceSpaceType must be one of ${XRReferenceSpaceTypes}`);
+    }
+
+    if (!this[PRIVATE].device.doesSessionSupportReferenceSpace(this[PRIVATE].id, type)) {
+      throw new DOMException(`The ${type} reference space is not supported by this session.`, 'NotSupportedError');
+    }
+
+    if (type === 'viewer') {
+      return this[PRIVATE].viewerSpace;
     }
 
     // Request a transform from the device given the values. If returning a
@@ -230,26 +332,23 @@ export default class XRSession extends EventTarget {
     if (type === 'bounded-floor') {
       if (!transform) {
         // 'bounded-floor' spaces must have a transform supplied by the device.
-        throw new NotSupportedError(`${type} XRReferenceSpace not supported by this device.`);
+        throw new DOMException(`${type} XRReferenceSpace not supported by this device.`, 'NotSupportedError');
       }
       
       let bounds = this[PRIVATE].device.requestStageBounds();
       if (!bounds) {
         // 'bounded-floor' spaces must have bounds geometry.
-        throw new NotSupportedError(`${type} XRReferenceSpace not supported by this device.`);
+        throw new DOMException(`${type} XRReferenceSpace not supported by this device.`, 'NotSupportedError');
         
       }
       // TODO: Create an XRBoundedReferenceSpace with the correct boundaries.
-      throw new NotSupportedError(`The WebXR polyfill does not support the ${type} reference space yet.`);
+      throw new DOMException(`The WebXR polyfill does not support the ${type} reference space yet.`, 'NotSupportedError');
     }
 
-    return new XRReferenceSpace(this[PRIVATE].device, type, transform);
+    return new XRReferenceSpace(type, transform);
   }
 
   /**
-   * @TODO see about reusing a wrapper function instead of recreating
-   * it on every frame if passed in the same `callback`
-   *
    * @param {Function} callback
    * @return {number}
    */
@@ -258,56 +357,37 @@ export default class XRSession extends EventTarget {
       return;
     }
 
-    // If the session is suspended and we have a previously saved
-    // suspendedCallback, abort this call
-    if (this[PRIVATE].suspended && this[PRIVATE].suspendedCallback) {
-      return;
-    }
-
-    // Otherwise, if the session is suspended but has not yet creating
-    // the suspended callback, do so. It will resume once it is no
-    // longer suspended.
-    if (this[PRIVATE].suspended && !this[PRIVATE].suspendedCallback) {
-      this[PRIVATE].suspendedCallback = callback;
-    }
-
-    // TODO: Should pending render state be applied before or after onFrameStart?
-    return this[PRIVATE].device.requestAnimationFrame(() => {
-      if (this[PRIVATE].pendingRenderState !== null) {
-        // Apply pending render state.
-        this[PRIVATE].activeRenderState = this[PRIVATE].pendingRenderState;
-        this[PRIVATE].pendingRenderState = null;
-
-        // TODO: set compositionDisabled
-
-        // Report to the device since it'll need to handle the layer for rendering.
-        if (this[PRIVATE].activeRenderState.baseLayer) {
-          this[PRIVATE].device.onBaseLayerSet(
-            this[PRIVATE].id,
-            this[PRIVATE].activeRenderState.baseLayer);
-        }
-
-        if (this[PRIVATE].activeRenderState.inlineVerticalFieldOfView) {
-          this[PRIVATE].device.onInlineVerticalFieldOfViewSet(
-            this[PRIVATE].id,
-            this[PRIVATE].activeRenderState.inlineVerticalFieldOfView);
-        }
-      }
-      this[PRIVATE].device.onFrameStart(this[PRIVATE].id);
-      callback(now(), this[PRIVATE].frame);
-      this[PRIVATE].device.onFrameEnd(this[PRIVATE].id);
+    // Add callback to the queue and return its handle
+    const handle = ++this[PRIVATE].frameHandle;
+    this[PRIVATE].frameCallbacks.push({
+      handle,
+      callback,
+      cancelled: false
     });
+    return handle;
   }
 
   /**
    * @param {number} handle
    */
   cancelAnimationFrame(handle) {
-    if (this[PRIVATE].ended) {
-      return;
+    // Remove the callback with that handle from the queue
+    let callbacks = this[PRIVATE].frameCallbacks;
+    let index = callbacks.findIndex(d => d && d.handle === handle);
+    if (index > -1) {
+      callbacks[index].cancelled = true;
+      callbacks.splice(index, 1);
     }
-
-    this[PRIVATE].device.cancelAnimationFrame(handle);
+    // If cancelAnimationFrame is called from within a frame callback, also check
+    // the remaining callbacks for the current frame:
+    callbacks = this[PRIVATE].currentFrameCallbacks;
+    if (callbacks) {
+      index = callbacks.findIndex(d => d && d.handle === handle);
+      if (index > -1) {
+        callbacks[index].cancelled = true;
+        // Rely on cancelled flag only; don't mutate this array while it's being iterated
+      }
+    }
   }
 
   /**
@@ -327,7 +407,7 @@ export default class XRSession extends EventTarget {
 
     // If this is an immersive session, trigger the platform to end, which
     // will call the `onPresentationEnd` handler, wrapping this up.
-    if (!this.immersive) {
+    if (this.immersive) {
       this[PRIVATE].ended = true;
       this[PRIVATE].device.removeEventListener('@@webvr-polyfill/vr-present-start',
                                                  this[PRIVATE].onPresentationStart);
@@ -341,6 +421,7 @@ export default class XRSession extends EventTarget {
       this.dispatchEvent('end', new XRSessionEvent('end', { session: this }));
     }
 
+    this[PRIVATE].stopDeviceFrameLoop();
     return this[PRIVATE].device.endSession(this[PRIVATE].id);
   }
 
@@ -380,9 +461,51 @@ export default class XRSession extends EventTarget {
     }
 
     if (this[PRIVATE].pendingRenderState === null) {
-      // Clone pendingRenderState and override any fields that are set by newState.
-      this[PRIVATE].pendingRenderState = Object.assign(
-        {}, this[PRIVATE].activeRenderState, newState);
+      const activeRenderState = this[PRIVATE].activeRenderState;
+      this[PRIVATE].pendingRenderState = {
+        depthNear: activeRenderState.depthNear,
+        depthFar: activeRenderState.depthFar,
+        inlineVerticalFieldOfView: activeRenderState.inlineVerticalFieldOfView,
+        baseLayer: activeRenderState.baseLayer
+      };
+    }
+    Object.assign(this[PRIVATE].pendingRenderState, newState);
+  }
+
+  /**
+   * Compares the inputSources with the ones in the previous frame.
+   * Fires imputsourceschange event if any added or removed
+   * inputSource is found.
+   */
+  _checkInputSourcesChange() {
+    const added = [];
+    const removed = [];
+    const newInputSources = this.inputSources;
+    const oldInputSources = this[PRIVATE].currentInputSources;
+
+    for (const newInputSource of newInputSources) {
+      if (!oldInputSources.includes(newInputSource)) {
+        added.push(newInputSource);
+      }
+    }
+
+    for (const oldInputSource of oldInputSources) {
+      if (!newInputSources.includes(oldInputSource)) {
+        removed.push(oldInputSource);
+      }
+    }
+
+    if (added.length > 0 || removed.length > 0) {
+      this.dispatchEvent('inputsourceschange', new XRInputSourcesChangeEvent('inputsourceschange', {
+        session: this,
+        added: added,
+        removed: removed
+      }));
+    }
+
+    this[PRIVATE].currentInputSources.length = 0;
+    for (const newInputSource of newInputSources) {
+      this[PRIVATE].currentInputSources.push(newInputSource);
     }
   }
 }
